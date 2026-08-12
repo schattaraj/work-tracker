@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light" data-accent="blue">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Migrate Legacy Data — DevTrack</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="auth-page">
+  <div class="auth-wrap" style="max-width:560px;">
+    <div class="glass-card auth-card p-4 p-md-5">
+      <div class="text-center mb-4">
+        <span class="brand-logo mx-auto mb-2"><i class="bi bi-box-arrow-in-down"></i></span>
+        <h3 class="fw-bold mb-0">Migrate Legacy Data</h3>
+        <p class="text-secondary small mb-0">
+          One-time tool: pulls the old browser-only data (from before login/server
+          storage existed) out of <code>localStorage</code> on <strong id="originLabel"></strong>,
+          so you can import it into the new shared workspace.
+        </p>
+      </div>
+
+      <div id="resultBox"></div>
+
+      <hr>
+      <p class="small text-secondary mb-0">
+        <strong>Next step:</strong> after downloading, log in as an admin on the running app,
+        go to <strong>Settings → Import JSON</strong>, and pick the file you just downloaded.
+        This page makes no network calls of its own — it only reads localStorage in this
+        browser tab and offers a local download.
+      </p>
+    </div>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+  var CANDIDATE_KEYS = ['devtrack_db_v1', 'devtrack_backup_v1'];
+  var box = document.getElementById('resultBox');
+  document.getElementById('originLabel').textContent = window.location.origin;
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function summarize(data) {
+    var parts = [
+      ['Tasks', (data.tasks || []).length],
+      ['Bugs', (data.bugs || []).length],
+      ['Daily logs', Object.keys(data.dailyLogs || {}).length],
+      ['Voice notes', (data.voiceNotes || []).length],
+      ['Screenshots', (data.screenshots || []).length],
+      ['Activity entries', (data.activity || []).length]
+    ];
+    return parts.map(function (p) {
+      return '<li class="list-group-item d-flex justify-content-between px-0"><span>' + p[0] + '</span><strong>' + p[1] + '</strong></li>';
+    }).join('');
+  }
+
+  function downloadJson(filename, obj) {
+    var blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  var found = null;
+  var foundKey = null;
+  for (var i = 0; i < CANDIDATE_KEYS.length; i++) {
+    var raw = null;
+    try { raw = localStorage.getItem(CANDIDATE_KEYS[i]); } catch (e) { /* localStorage unavailable */ }
+    if (raw) {
+      try {
+        var parsed = JSON.parse(raw);
+        // devtrack_backup_v1 wrapped the real data as { data, date }
+        found = parsed && parsed.data ? parsed.data : parsed;
+        foundKey = CANDIDATE_KEYS[i];
+        break;
+      } catch (e) { /* corrupt entry, keep looking */ }
+    }
+  }
+
+  if (!found) {
+    box.innerHTML =
+      '<div class="alert alert-warning">' +
+      '<i class="bi bi-exclamation-triangle-fill me-2"></i>No legacy data found in localStorage for <strong>' +
+      escapeHtml(window.location.origin) + '</strong>.' +
+      '</div>' +
+      '<p class="small text-secondary">This only works if the browser tab is on the exact same origin ' +
+      '(protocol + host + port) that the old static app was opened from. If you originally opened it as a ' +
+      'local file, try serving this page the same way; if it was on a different port, load this file from ' +
+      'that port instead.</p>';
+    return;
+  }
+
+  box.innerHTML =
+    '<div class="alert alert-success"><i class="bi bi-check-circle-fill me-2"></i>Found data under <code>' +
+    escapeHtml(foundKey) + '</code>.</div>' +
+    '<ul class="list-group list-group-flush mb-3">' + summarize(found) + '</ul>' +
+    '<button class="btn btn-primary w-100" id="btnDownload"><i class="bi bi-download me-1"></i>Download as JSON</button>';
+
+  document.getElementById('btnDownload').addEventListener('click', function () {
+    downloadJson('devtrack-legacy-export.json', found);
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "name": "devtrack",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Personal Developer Work Tracker — Next.js backend (auth + JSON-file storage) with a vanilla-JS frontend.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@vercel/blob": "^2.8.0",
+    "bcryptjs": "^2.4.3",
+    "jose": "^6.2.8",
+    "next": "^16.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
