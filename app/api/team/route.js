@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
 import { getSessionUser } from '../../../lib/auth.js';
 import { readUsers } from '../../../lib/store.js';
+import { withApiError } from '../../../lib/withApiError.js';
 
 // Lightweight roster of active accounts, for the task-assignment dropdown.
 // Any active user can see who they can assign work to — this is not an
 // admin-only endpoint like /api/admin/users (which also exposes pending/
 // suspended accounts and full management actions).
-export async function GET() {
+export const GET = withApiError(async function GET() {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -17,4 +18,4 @@ export async function GET() {
     .sort((a, b) => a.name.localeCompare(b.name));
 
   return NextResponse.json({ members });
-}
+});

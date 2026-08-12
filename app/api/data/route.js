@@ -1,19 +1,20 @@
 import { NextResponse } from 'next/server';
 import { getSessionUser } from '../../../lib/auth.js';
 import { readDb, writeDb } from '../../../lib/store.js';
+import { withApiError } from '../../../lib/withApiError.js';
 
 // The whole team/workspace shares one db.json (tasks, bugs, daily logs,
 // voice notes, screenshots, activity). Any active user can read and write
 // it — login only gates *who* gets in, per the shared-workspace model.
 
-export async function GET() {
+export const GET = withApiError(async function GET() {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const db = await readDb();
   return NextResponse.json(db);
-}
+});
 
-export async function PUT(request) {
+export const PUT = withApiError(async function PUT(request) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -29,4 +30,4 @@ export async function PUT(request) {
 
   await writeDb(body);
   return NextResponse.json({ ok: true });
-}
+});

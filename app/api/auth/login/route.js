@@ -4,6 +4,7 @@ import {
   getUsersSeeded, findUserByEmail, verifyPassword, signSession,
   SESSION_COOKIE, sessionCookieOptions, publicUser
 } from '../../../../lib/auth.js';
+import { withApiError } from '../../../../lib/withApiError.js';
 
 const STATUS_MESSAGES = {
   pending: 'Your account is awaiting admin approval.',
@@ -11,7 +12,7 @@ const STATUS_MESSAGES = {
   rejected: 'Your registration was not approved.'
 };
 
-export async function POST(request) {
+export const POST = withApiError(async function POST(request) {
   let body;
   try {
     body = await request.json();
@@ -42,4 +43,4 @@ export async function POST(request) {
   (await cookies()).set(SESSION_COOKIE, token, sessionCookieOptions());
 
   return NextResponse.json({ user: publicUser(user) });
-}
+});

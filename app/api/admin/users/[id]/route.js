@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { getSessionUser, getUsersSeeded, findUserById, publicUser } from '../../../../../lib/auth.js';
 import { writeUsers } from '../../../../../lib/store.js';
+import { withApiError } from '../../../../../lib/withApiError.js';
 
 const VALID_STATUSES = ['pending', 'active', 'rejected', 'suspended'];
 const VALID_ROLES = ['admin', 'user'];
 
-export async function PATCH(request, { params }) {
+export const PATCH = withApiError(async function PATCH(request, { params }) {
   const actor = await getSessionUser();
   if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (actor.role !== 'admin') return NextResponse.json({ error: 'Admins only.' }, { status: 403 });
@@ -48,4 +49,4 @@ export async function PATCH(request, { params }) {
   await writeUsers(usersData);
 
   return NextResponse.json({ user: publicUser(target) });
-}
+});

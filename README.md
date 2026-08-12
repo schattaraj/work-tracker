@@ -60,6 +60,31 @@ the pending → admin-approves → login flow.
 4. Deploy. Visit the URL, sign in as the seeded admin, and approve real
    users as they register from `/register.html`.
 
+### Something's broken after deploying?
+
+Visit **`/api/health`** on your deployment (no login required). It reports
+whether `AUTH_SECRET` and the Blob store are actually configured, e.g.:
+
+```json
+{
+  "ok": false,
+  "environment": "vercel",
+  "storageMode": "local-disk",
+  "authSecretConfigured": true,
+  "blobConfigured": false,
+  "problems": ["BLOB_READ_WRITE_TOKEN is not set — connect a Vercel Blob store..."]
+}
+```
+
+The most common cause of a 500 on login/register right after deploying is
+exactly this: no Blob store connected yet, so the server tries (and fails)
+to write to local disk, which is read-only on Vercel. Connect one under
+**Storage → Create Database → Blob**, then **redeploy** (env vars only take
+effect on the next deployment, not retroactively on the running one). Every
+API route also now logs the real error to the function's console — check
+**Vercel Dashboard → your project → Logs** if `/api/health` looks fine but
+something else is still failing.
+
 ## Known limitations (by design, for a free/small-scale tool)
 
 - **Whole-file writes.** Every save rewrites the entire `db.json`. Two

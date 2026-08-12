@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getUsersSeeded, findUserByEmail, hashPassword } from '../../../../lib/auth.js';
 import { writeUsers } from '../../../../lib/store.js';
+import { withApiError } from '../../../../lib/withApiError.js';
 
-export async function POST(request) {
+export const POST = withApiError(async function POST(request) {
   let body;
   try {
     body = await request.json();
@@ -44,4 +45,4 @@ export async function POST(request) {
   return NextResponse.json({
     message: 'Account created. An admin needs to approve it before you can log in.'
   }, { status: 201 });
-}
+});

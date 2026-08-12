@@ -4,7 +4,7 @@ import { verifySession, SESSION_COOKIE } from './lib/session.js';
 // Paths reachable without a session.
 const PUBLIC_PATHS = new Set([
   '/login.html', '/register.html',
-  '/api/auth/login', '/api/auth/register',
+  '/api/auth/login', '/api/auth/register', '/api/health',
   '/style.css', '/login.js', '/register.js', '/favicon.ico'
 ]);
 
