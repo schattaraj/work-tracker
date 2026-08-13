@@ -632,6 +632,74 @@
       return `<span class="assignee-chip"><span class="avatar-badge">${Utils.escapeHtml(TeamMembers.initialsFor(t.assigneeId))}</span>${Utils.escapeHtml(name)}</span>`;
     },
 
+    // Personal tasks created before per-owner tracking existed have no
+    // createdById on record, so the server can't scope them to anyone and
+    // leaves them visible to everyone as a safe fallback (see
+    // lib/store.js#isTaskVisibleTo). Claiming is how a real person turns
+    // "visible to everyone" into "private to me" — deliberate and
+    // self-service, since there's no way to know the true original owner.
+    isLegacyUnowned(t) {
+      return (t.taskType || 'personal') === 'personal' && !t.createdById;
+    },
+
+    claim(id) {
+      const t = TaskManager.getById(id);
+      if (!t || !TaskManager.isLegacyUnowned(t) || !Auth.user) return;
+      t.createdById = Auth.user.id;
+      t.createdByName = Auth.user.name;
+      t.updatedDate = Utils.nowIso();
+      t.history.push({ date: t.updatedDate, message: `Claimed by ${Auth.user.name} (pre-dates owner tracking)` });
+      Store.save();
+      addActivity('bi-person-check', `Claimed legacy task "${t.title}"`);
+    },
+
+    claimAllUnowned() {
+      const targets = Store.data.tasks.filter(TaskManager.isLegacyUnowned);
+      if (!targets.length || !Auth.user) return;
+      targets.forEach(t => {
+        t.createdById = Auth.user.id;
+        t.createdByName = Auth.user.name;
+        t.updatedDate = Utils.nowIso();
+        t.history.push({ date: t.updatedDate, message: `Claimed by ${Auth.user.name} (pre-dates owner tracking)` });
+      });
+      Store.save();
+      addActivity('bi-person-check', `Claimed ${targets.length} legacy task${targets.length === 1 ? '' : 's'} as mine`);
+      return targets.length;
+    },
+
+    renderLegacyBanner() {
+      const count = Store.data.tasks.filter(TaskManager.isLegacyUnowned).length;
+      const banner = document.getElementById('legacyTasksBanner');
+      banner.classList.toggle('d-none', count === 0);
+      if (count > 0) {
+        document.getElementById('legacyTasksBannerText').textContent =
+          `${count} personal task${count === 1 ? '' : 's'} from before this workspace had per-owner tracking.`;
+      }
+    },
+
+    // Used on Import JSON: any task in the imported file that isn't marked
+    // as a team task and has no recorded owner gets stamped as personal to
+    // whoever is importing, right away — rather than landing as "visible to
+    // everyone" and needing a manual Claim afterward. Team tasks are left
+    // alone (ownership doesn't gate their visibility).
+    stampUnownedAsImporterPersonal(tasks) {
+      if (!Array.isArray(tasks) || !Auth.user) return { result: tasks || [], stamped: 0 };
+      let stamped = 0;
+      const result = tasks.map(t => {
+        if ((t.taskType || 'personal') === 'team' || t.createdById) return t;
+        stamped++;
+        const now = Utils.nowIso();
+        return {
+          ...t,
+          taskType: 'personal',
+          createdById: Auth.user.id,
+          createdByName: Auth.user.name,
+          history: [...(t.history || []), { date: now, message: `Imported and marked personal to ${Auth.user.name} (no owner in import file)` }]
+        };
+      });
+      return { result, stamped };
+    },
+
     openModal(id = null) {
       const modalEl = document.getElementById('taskModal');
       const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
@@ -678,6 +746,7 @@
       document.getElementById('taskPinned').checked = !!d.pinned;
       document.getElementById('taskArchived').checked = !!d.archived;
       document.getElementById('taskMetaLabel').textContent = `Created ${Utils.formatDateTime(d.createdDate)}${d.createdByName ? ' by ' + d.createdByName : ''} · Updated ${Utils.formatDateTime(d.updatedDate)}`;
+      document.getElementById('btnClaimTask').classList.toggle('d-none', TaskManager.isNew || !TaskManager.isLegacyUnowned(d));
       document.getElementById('taskNotesPreview').innerHTML = Utils.markdownLite(d.notes);
       document.getElementById('taskVoiceOutput').value = '';
       TaskManager.populateProjectOptions();
@@ -854,6 +923,7 @@
 
     renderList() {
       TaskManager.populateFilterOptions();
+      TaskManager.renderLegacyBanner();
       const all = TaskManager.getFiltered();
       const totalPages = Math.max(1, Math.ceil(all.length / PAGE_SIZE));
       State.taskPage = Utils.clamp(State.taskPage, 1, totalPages);
@@ -1684,6 +1754,14 @@
       State.taskPage = 1;
       TaskManager.renderList();
     });
+    document.getElementById('btnClaimAllLegacy').addEventListener('click', () => {
+      const count = Store.data.tasks.filter(TaskManager.isLegacyUnowned).length;
+      confirmAction('Claim All as Mine?', `This marks ${count} legacy task${count === 1 ? '' : 's'} as created by you, making ${count === 1 ? 'it' : 'them'} private to your account. Only do this for tasks that are actually yours.`, () => {
+        const claimed = TaskManager.claimAllUnowned();
+        toast(`Claimed ${claimed} task${claimed === 1 ? '' : 's'}.`, 'success');
+        TaskManager.renderList();
+      });
+    });
     document.getElementById('tasksTableBody').addEventListener('click', e => {
       const tr = e.target.closest('tr'); if (!tr) return;
       const id = tr.dataset.id;
@@ -1714,6 +1792,19 @@
       const isTeam = e.target.value === 'team';
       document.getElementById('taskAssigneeWrap').classList.toggle('d-none', !isTeam);
       if (isTeam) TeamMembers.populateSelect(document.getElementById('taskAssignee'), TaskManager.draft ? TaskManager.draft.assigneeId : '');
+    });
+    document.getElementById('btnClaimTask').addEventListener('click', () => {
+      if (!TaskManager.draft) return;
+      TaskManager.claim(TaskManager.draft.id);
+      // Reflect the claim immediately in the open modal's draft + meta line.
+      TaskManager.draft.createdById = Auth.user.id;
+      TaskManager.draft.createdByName = Auth.user.name;
+      document.getElementById('taskMetaLabel').textContent = `Created ${Utils.formatDateTime(TaskManager.draft.createdDate)} by ${Auth.user.name} · Updated ${Utils.formatDateTime(TaskManager.draft.updatedDate)}`;
+      document.getElementById('btnClaimTask').classList.add('d-none');
+      toast('Task claimed — now private to you.', 'success');
+      if (State.currentView === 'tasks') TaskManager.renderList();
+      if (State.currentView === 'kanban') KanbanManager.render();
+      Dashboard.refreshIfActive();
     });
     document.getElementById('taskForm').addEventListener('submit', e => {
       e.preventDefault();
@@ -1965,11 +2056,15 @@
       reader.onload = () => {
         try {
           const parsed = JSON.parse(reader.result);
-          confirmAction('Import Data?', 'This will overwrite the shared workspace for every user with the imported file. This cannot be undone.', async () => {
-            Store.data = Object.assign(Store.defaultData(), parsed);
+          const { result: stampedTasks, stamped } = TaskManager.stampUnownedAsImporterPersonal(parsed.tasks);
+          const stampNote = stamped > 0
+            ? ` ${stamped} imported task${stamped === 1 ? '' : 's'} with no recorded owner will be marked personal to your account.`
+            : '';
+          confirmAction('Import Data?', `This will overwrite the shared workspace for every user with the imported file. This cannot be undone.${stampNote}`, async () => {
+            Store.data = Object.assign(Store.defaultData(), parsed, { tasks: stampedTasks });
             await Store.save();
             switchView(State.currentView);
-            toast('Data imported successfully.', 'success');
+            toast(`Data imported successfully.${stamped > 0 ? ` ${stamped} unowned task(s) marked personal to you.` : ''}`, 'success');
           });
         } catch (err) { toast('Invalid JSON file.', 'danger'); }
       };

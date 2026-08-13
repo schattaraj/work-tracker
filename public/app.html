@@ -167,6 +167,15 @@
         <li class="nav-item"><button type="button" class="nav-link" data-task-type="team"><i class="bi bi-people-fill me-1"></i>Team Tasks</button></li>
       </ul>
 
+      <div class="alert alert-warning d-none d-flex flex-wrap align-items-center gap-2 justify-content-between" id="legacyTasksBanner">
+        <div>
+          <i class="bi bi-exclamation-triangle-fill me-2"></i>
+          <span id="legacyTasksBannerText"></span>
+          <span class="d-block small mt-1">These predate per-owner tracking and are still visible to everyone — claim the ones that are actually yours to make them private.</span>
+        </div>
+        <button type="button" class="btn btn-sm btn-warning flex-shrink-0" id="btnClaimAllLegacy"><i class="bi bi-person-check me-1"></i>Claim All as Mine</button>
+      </div>
+
       <div class="glass-card p-2 p-md-3 mb-3">
         <div class="row g-2 align-items-center filter-bar">
           <div class="col-6 col-md-4 col-lg-2">
@@ -593,6 +602,9 @@
                 </div>
                 <div class="col-12">
                   <small class="text-secondary" id="taskMetaLabel"></small>
+                  <button type="button" class="btn btn-sm btn-outline-warning ms-2 d-none" id="btnClaimTask" title="This task predates owner tracking and is visible to everyone — claim it if it's yours">
+                    <i class="bi bi-person-check me-1"></i>Claim as Mine
+                  </button>
                 </div>
               </div>
             </div>
