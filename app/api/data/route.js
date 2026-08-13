@@ -1,16 +1,18 @@
 import { NextResponse } from 'next/server';
 import { getSessionUser } from '../../../lib/auth.js';
-import { readDb, writeDb } from '../../../lib/store.js';
+import { readDbForUser, writeDbForUser } from '../../../lib/store.js';
 import { withApiError } from '../../../lib/withApiError.js';
 
-// The whole team/workspace shares one db.json (tasks, bugs, daily logs,
-// voice notes, screenshots, activity). Any active user can read and write
-// it — login only gates *who* gets in, per the shared-workspace model.
+// Bugs, daily logs, and activity are a fully shared workspace — every active
+// user reads and writes the same records, per the shared-workspace model.
+// Tasks are split: team tasks are shared the same way, but personal tasks
+// (and anything attached to them) are scoped to their creator on both read
+// and write — see lib/store.js#readDbForUser / #writeDbForUser.
 
 export const GET = withApiError(async function GET() {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const db = await readDb();
+  const db = await readDbForUser(user.id);
   return NextResponse.json(db);
 });
 
@@ -28,6 +30,6 @@ export const PUT = withApiError(async function PUT(request) {
     return NextResponse.json({ error: 'Expected a JSON object.' }, { status: 400 });
   }
 
-  await writeDb(body);
+  await writeDbForUser(user.id, body);
   return NextResponse.json({ ok: true });
 });
