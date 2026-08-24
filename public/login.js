@@ -29,11 +29,14 @@
         return;
       }
       window.location.href = '/app.html';
-      return;
     } catch (err) {
       showError('Network error — please try again.');
+    } finally {
+      // Always restore the button — on error OR success — so a failed
+      // attempt (wrong password, pending account, network blip) never
+      // leaves it stuck disabled/spinning with no way to retry.
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-box-arrow-in-right me-1"></i>Sign In';
     }
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-box-arrow-in-right me-1"></i>Sign In';
   });
 })();

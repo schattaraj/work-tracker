@@ -75,6 +75,7 @@
     <div class="offcanvas-body d-flex flex-column p-0">
       <ul class="nav nav-pills flex-column app-nav" id="mainNav">
         <li class="nav-item"><a class="nav-link" data-view="dashboard" href="#dashboard"><i class="bi bi-speedometer2"></i><span>Dashboard</span></a></li>
+        <li class="nav-item"><a class="nav-link" data-view="projects" href="#projects"><i class="bi bi-folder-fill"></i><span>Projects</span></a></li>
         <li class="nav-item"><a class="nav-link" data-view="tasks" href="#tasks"><i class="bi bi-list-check"></i><span>Task Manager</span></a></li>
         <li class="nav-item"><a class="nav-link" data-view="bugs" href="#bugs"><i class="bi bi-bug-fill"></i><span>Bug Tracker</span></a></li>
         <li class="nav-item"><a class="nav-link" data-view="dailylog" href="#dailylog"><i class="bi bi-journal-text"></i><span>Daily Work Log</span></a></li>
@@ -152,6 +153,23 @@
       </div>
     </section>
 
+    <!-- ---------- PROJECTS ---------- -->
+    <section id="view-projects" class="view d-none">
+      <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div>
+          <nav aria-label="breadcrumb"><ol class="breadcrumb mb-0"><li class="breadcrumb-item active">Projects</li></ol></nav>
+          <h3 class="fw-bold mb-0">Projects</h3>
+        </div>
+        <button type="button" class="btn btn-primary admin-only-action d-none" id="btnNewProject"><i class="bi bi-plus-lg me-1"></i>New Project</button>
+      </div>
+
+      <div class="row g-3" id="projectsGrid"></div>
+      <div id="projectsEmptyState" class="empty-state d-none">
+        <i class="bi bi-folder2-open"></i>
+        <p id="projectsEmptyText">No projects yet.</p>
+      </div>
+    </section>
+
     <!-- ---------- TASKS ---------- -->
     <section id="view-tasks" class="view d-none">
       <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
@@ -163,9 +181,17 @@
       </div>
 
       <ul class="nav nav-tabs mb-3" id="taskTypeTabs">
-        <li class="nav-item"><button type="button" class="nav-link active" data-task-type="personal"><i class="bi bi-person-fill me-1"></i>Personal Tasks</button></li>
+        <li class="nav-item"><button type="button" class="nav-link" data-task-type="personal"><i class="bi bi-person-fill me-1"></i>Personal Tasks</button></li>
         <li class="nav-item"><button type="button" class="nav-link" data-task-type="team"><i class="bi bi-people-fill me-1"></i>Team Tasks</button></li>
+        <li class="nav-item"><button type="button" class="nav-link active" data-task-type="project"><i class="bi bi-folder-fill me-1"></i>Project Tasks</button></li>
       </ul>
+
+      <div class="glass-card p-2 p-md-3 mb-3" id="projectTaskSelectorWrap">
+        <label class="form-label small fw-semibold mb-1">Project</label>
+        <select class="form-select form-select-sm" id="projectTaskSelector" style="max-width:360px;">
+          <option value="">Select a project…</option>
+        </select>
+      </div>
 
       <div class="alert alert-warning d-none d-flex flex-wrap align-items-center gap-2 justify-content-between" id="legacyTasksBanner">
         <div>
@@ -207,7 +233,7 @@
               <option value="month">This Month</option>
             </select>
           </div>
-          <div class="col-6 col-md-3 col-lg-2 d-none" id="filterAssignedToMeWrap">
+          <div class="col-6 col-md-3 col-lg-2" id="filterAssignedToMeWrap">
             <select class="form-select form-select-sm" id="filterAssignee" title="Filter by assignee">
               <option value="">All Assignees</option>
               <option value="me">Assigned to Me</option>
@@ -506,7 +532,7 @@
           <h5 class="modal-title" id="taskModalTitle"><i class="bi bi-card-checklist me-2"></i>New Task</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
-        <div class="modal-body">
+        <div class="modal-body" style="max-height:calc( 100vh - 180px);">
           <ul class="nav nav-tabs" id="taskModalTabs">
             <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabDetails" type="button">Details</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabChecklist" type="button">Checklist</button></li>
@@ -533,6 +559,13 @@
                   <select class="form-select" id="taskType">
                     <option value="personal" selected>Personal</option>
                     <option value="team">Team</option>
+                    <option value="project">Project</option>
+                  </select>
+                </div>
+                <div class="col-md-6 d-none" id="taskProjectWrap">
+                  <label class="form-label small fw-semibold">Project</label>
+                  <select class="form-select" id="taskProjectSelect">
+                    <option value="">Select a project…</option>
                   </select>
                 </div>
                 <div class="col-md-6 d-none" id="taskAssigneeWrap">
@@ -540,6 +573,13 @@
                   <select class="form-select" id="taskAssignee">
                     <option value="">Unassigned</option>
                   </select>
+                  <div class="form-text" id="taskAssigneeHint"></div>
+                </div>
+                <div class="col-12 d-none" id="taskReadOnlyNotice">
+                  <div class="alert alert-secondary py-2 mb-0"><i class="bi bi-eye me-1"></i>View only — you're a member of this project but not assigned to this task, so you can't edit it.</div>
+                </div>
+                <div class="col-12 d-none" id="taskLimitedNotice">
+                  <div class="alert alert-info py-2 mb-0"><i class="bi bi-info-circle me-1"></i>You're assigned to this task — you can update Status, Checklist, Notes, and add screenshots. Other fields, deleting the task, and removing screenshots are restricted to the project's admin.</div>
                 </div>
                 <div class="col-md-4">
                   <label class="form-label small fw-semibold">Category</label>
@@ -658,7 +698,7 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-danger me-auto d-none" id="btnDeleteTaskModal"><i class="bi bi-trash3 me-1"></i>Delete</button>
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="bi bi-save2 me-1"></i>Save Task</button>
+          <button type="submit" class="btn btn-primary" id="btnSaveTaskModal"><i class="bi bi-save2 me-1"></i>Save Task</button>
         </div>
       </form>
     </div>
@@ -738,6 +778,50 @@
           <button type="button" class="btn btn-outline-danger me-auto d-none" id="btnDeleteBugModal"><i class="bi bi-trash3 me-1"></i>Delete</button>
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
           <button type="submit" class="btn btn-danger"><i class="bi bi-save2 me-1"></i>Save Bug</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ============ PROJECT MODAL ============ -->
+<div class="modal fade" id="projectModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <form id="projectForm">
+        <input type="hidden" id="projectId">
+        <div class="modal-header">
+          <h5 class="modal-title" id="projectModalTitle"><i class="bi bi-folder-fill me-2"></i>New Project</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label small fw-semibold">Project Name *</label>
+              <input type="text" class="form-control" id="projectName" required>
+            </div>
+            <div class="col-12">
+              <label class="form-label small fw-semibold">Description</label>
+              <textarea class="form-control" id="projectDescription" rows="3"></textarea>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-semibold">Status</label>
+              <select class="form-select" id="projectStatus">
+                <option value="active">Active</option>
+                <option value="archived">Archived</option>
+              </select>
+            </div>
+            <div class="col-12">
+              <label class="form-label small fw-semibold">Assigned Members</label>
+              <div class="form-text mb-1">Only these members will see this project or its tasks.</div>
+              <div class="border rounded p-2" style="max-height:220px; overflow-y:auto;" id="projectMembersList"></div>
+            </div>
+            <div class="col-12"><small class="text-secondary" id="projectMetaLabel"></small></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-save2 me-1"></i>Save Project</button>
         </div>
       </form>
     </div>

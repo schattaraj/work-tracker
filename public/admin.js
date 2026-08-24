@@ -21,10 +21,17 @@
     t.show();
     el.addEventListener('hidden.bs.toast', () => el.remove());
   }
+  const spinner = (extraClass) => `<span class="spinner-border spinner-border-sm${extraClass ? ' ' + extraClass : ''}" role="status" aria-hidden="true"></span>`;
 
   const STATUS_BADGE = { active: 'success', pending: 'warning text-dark', suspended: 'danger', rejected: 'secondary' };
 
   let currentUserId = null;
+
+  function showTableLoading() {
+    document.getElementById('adminEmptyState').classList.add('d-none');
+    document.getElementById('adminUsersBody').innerHTML =
+      `<tr><td colspan="6" class="text-center text-muted py-4">${spinner('me-2')}Loading users…</td></tr>`;
+  }
 
   async function loadMe() {
     const res = await fetch('/api/auth/me');
@@ -40,7 +47,13 @@
       document.body.innerHTML = '<div class="p-5 text-center"><h4>Admins only.</h4><a href="/app.html">Back to app</a></div>';
       return;
     }
-    if (!res.ok) { toast('Failed to load users.', 'danger'); return; }
+    if (!res.ok) {
+      toast('Failed to load users.', 'danger');
+      document.getElementById('adminUsersBody').innerHTML =
+        '<tr><td colspan="6" class="text-center text-danger py-4">Failed to load users. <button type="button" class="btn btn-sm btn-outline-danger ms-2" id="btnRetryLoadUsers">Retry</button></td></tr>';
+      document.getElementById('btnRetryLoadUsers')?.addEventListener('click', () => { showTableLoading(); loadUsers(); });
+      return;
+    }
     const { users } = await res.json();
     renderStats(users);
     renderTable(users);
@@ -66,11 +79,11 @@
     tbody.innerHTML = users.map(u => {
       const badgeCls = STATUS_BADGE[u.status] || 'secondary';
       const actions = [];
-      if (u.status !== 'active') actions.push(`<button class="btn btn-sm btn-outline-success" data-act="active" data-id="${u.id}"><i class="bi bi-check-lg"></i> Activate</button>`);
-      if (u.status === 'active') actions.push(`<button class="btn btn-sm btn-outline-warning" data-act="suspended" data-id="${u.id}"><i class="bi bi-pause-fill"></i> Suspend</button>`);
-      if (u.status === 'pending') actions.push(`<button class="btn btn-sm btn-outline-danger" data-act="rejected" data-id="${u.id}"><i class="bi bi-x-lg"></i> Reject</button>`);
-      if (u.role === 'user') actions.push(`<button class="btn btn-sm btn-outline-primary" data-role-act="admin" data-id="${u.id}"><i class="bi bi-shield-plus"></i> Make Admin</button>`);
-      if (u.role === 'admin') actions.push(`<button class="btn btn-sm btn-outline-secondary" data-role-act="user" data-id="${u.id}"><i class="bi bi-shield-minus"></i> Remove Admin</button>`);
+      if (u.status !== 'active') actions.push(`<button type="button" class="btn btn-sm btn-outline-success" data-act="active" data-id="${u.id}"><i class="bi bi-check-lg"></i> Activate</button>`);
+      if (u.status === 'active') actions.push(`<button type="button" class="btn btn-sm btn-outline-warning" data-act="suspended" data-id="${u.id}"><i class="bi bi-pause-fill"></i> Suspend</button>`);
+      if (u.status === 'pending') actions.push(`<button type="button" class="btn btn-sm btn-outline-danger" data-act="rejected" data-id="${u.id}"><i class="bi bi-x-lg"></i> Reject</button>`);
+      if (u.role === 'user') actions.push(`<button type="button" class="btn btn-sm btn-outline-primary" data-role-act="admin" data-id="${u.id}"><i class="bi bi-shield-plus"></i> Make Admin</button>`);
+      if (u.role === 'admin') actions.push(`<button type="button" class="btn btn-sm btn-outline-secondary" data-role-act="user" data-id="${u.id}"><i class="bi bi-shield-minus"></i> Remove Admin</button>`);
       return `
         <tr>
           <td>${escapeHtml(u.name)}${u.id === currentUserId ? ' <span class="badge bg-secondary-subtle text-secondary-emphasis">You</span>' : ''}</td>
@@ -101,21 +114,49 @@
   document.getElementById('adminUsersBody').addEventListener('click', async (e) => {
     const statusBtn = e.target.closest('[data-act]');
     const roleBtn = e.target.closest('[data-role-act]');
-    if (statusBtn) {
-      const ok = await patchUser(statusBtn.dataset.id, { status: statusBtn.dataset.act });
-      if (ok) { toast('User updated.', 'success'); loadUsers(); }
-    } else if (roleBtn) {
-      const ok = await patchUser(roleBtn.dataset.id, { role: roleBtn.dataset.roleAct });
-      if (ok) { toast('User updated.', 'success'); loadUsers(); }
+    const actionBtn = statusBtn || roleBtn;
+    if (!actionBtn) return;
+
+    // Show a spinner on the button that was actually clicked, and disable
+    // every action button in the table (not just this row) so a second
+    // click can't fire a conflicting request while this one is in flight.
+    const allActionButtons = Array.from(document.querySelectorAll('#adminUsersBody button[data-act], #adminUsersBody button[data-role-act]'));
+    allActionButtons.forEach(b => { b.disabled = true; });
+    const originalHtml = actionBtn.innerHTML;
+    actionBtn.innerHTML = spinner();
+
+    const ok = statusBtn
+      ? await patchUser(statusBtn.dataset.id, { status: statusBtn.dataset.act })
+      : await patchUser(roleBtn.dataset.id, { role: roleBtn.dataset.roleAct });
+
+    if (ok) {
+      toast('User updated.', 'success');
+      await loadUsers(); // re-renders the whole table fresh, replacing these buttons entirely
+    } else {
+      // Request failed — the table wasn't touched, so restore the buttons
+      // ourselves rather than leaving them stuck disabled/spinning.
+      actionBtn.innerHTML = originalHtml;
+      allActionButtons.forEach(b => { b.disabled = false; });
     }
   });
 
   document.getElementById('btnLogout').addEventListener('click', async () => {
-    await fetch('/api/auth/logout', { method: 'POST' });
-    window.location.href = '/login.html';
+    const btn = document.getElementById('btnLogout');
+    btn.disabled = true;
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = spinner('me-1') + 'Logging out…';
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login.html';
+    } catch (err) {
+      toast('Network error — please try again.', 'danger');
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
   });
 
   (async function init() {
+    showTableLoading();
     await loadMe();
     await loadUsers();
   })();

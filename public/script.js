@@ -24,7 +24,7 @@
   const PRIORITY_LIST = ['Low', 'Medium', 'High', 'Critical'];
   const CATEGORY_LIST = ['Feature', 'Bug', 'Learning', 'Meeting', 'Research', 'Personal'];
   const BUG_STATUS_LIST = ['Open', 'In Progress', 'Retesting', 'Resolved', 'Closed', 'Reopened'];
-  const VIEWS = ['dashboard', 'tasks', 'bugs', 'dailylog', 'voice', 'screenshots', 'kanban', 'calendar', 'reports', 'settings'];
+  const VIEWS = ['dashboard', 'projects', 'tasks', 'bugs', 'dailylog', 'voice', 'screenshots', 'kanban', 'calendar', 'reports', 'settings'];
 
   /* ========================================================================
      UTILS — small, reusable, pure helper functions
@@ -258,11 +258,61 @@
   };
 
   /* ========================================================================
+     PROJECTS — the roster of projects visible to the current user (server
+     already scopes this to "all" for admins / "assigned only" for everyone
+     else — see GET /api/projects). Project *mutations* always go straight
+     to the dedicated /api/projects* endpoints, never through Store.save().
+     ==================================================================== */
+  const Projects = {
+    list: [],
+    async load() {
+      try {
+        const res = await fetch('/api/projects', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        Projects.list = data.projects || [];
+      } catch (e) {
+        console.error('DevTrack: failed to load projects.', e);
+      }
+    },
+    getById(id) { return Projects.list.find(p => p.id === id); },
+    nameFor(id) { const p = Projects.getById(id); return p ? p.name : 'Unknown project'; },
+    activeMembersOf(project) {
+      if (!project) return [];
+      return TeamMembers.list.filter(m => (project.assignedUserIds || []).includes(m.id));
+    },
+    populateProjectSelect(selectEl, selectedId, opts = {}) {
+      const list = opts.includeArchived ? Projects.list : Projects.list.filter(p => p.status !== 'archived');
+      selectEl.innerHTML = '<option value="">Select a project…</option>' +
+        list.map(p => `<option value="${p.id}">${Utils.escapeHtml(p.name)}${p.status === 'archived' ? ' (Archived)' : ''}</option>`).join('');
+      selectEl.value = selectedId || '';
+    },
+    populateMembersSelect(selectEl, selectedId, project) {
+      const members = Projects.activeMembersOf(project);
+      selectEl.innerHTML = '<option value="">Unassigned</option>' +
+        members.map(m => `<option value="${m.id}">${Utils.escapeHtml(m.name)}${Auth.user && m.id === Auth.user.id ? ' (You)' : ''}</option>`).join('');
+      selectEl.value = selectedId || '';
+    },
+    async createProject(payload) {
+      const res = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to create project.');
+      return data.project;
+    },
+    async updateProject(id, payload) {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to update project.');
+      return data.project;
+    }
+  };
+
+  /* ========================================================================
      APP STATE (in-memory / transient UI state)
      ==================================================================== */
   const State = {
     currentView: 'dashboard',
-    taskFilters: { status: '', priority: '', category: '', project: '', date: '', created: '', taskType: 'personal', assignee: '', favorite: false, pinned: false, archived: false },
+    taskFilters: { status: '', priority: '', category: '', project: '', date: '', created: '', taskType: 'project', projectId: '', assignee: '', favorite: false, pinned: false, archived: false },
     taskPage: 1,
     bugFilters: { status: '', severity: '', priority: '', module: '' }
   };
@@ -555,7 +605,7 @@
             <div class="thumb-actions">
               <button type="button" class="btn btn-light btn-sm" data-shot-view="${s.id}" title="View"><i class="bi bi-arrows-fullscreen"></i></button>
               <button type="button" class="btn btn-light btn-sm" data-shot-download="${s.id}" title="Download"><i class="bi bi-download"></i></button>
-              <button type="button" class="btn btn-danger btn-sm" data-shot-delete="${s.id}" title="Delete"><i class="bi bi-trash3"></i></button>
+              ${opts.hideDelete ? '' : `<button type="button" class="btn btn-danger btn-sm" data-shot-delete="${s.id}" title="Delete"><i class="bi bi-trash3"></i></button>`}
             </div>
             <div class="thumb-caption">${Utils.escapeHtml(s.name)}</div>
           </div>
@@ -600,13 +650,37 @@
         estimatedHours: '', actualHours: '', checklist: [], notes: '', favorite: false, pinned: false,
         archived: false, history: [{ date: now, message: 'Task created' }], timerStart: null,
         // Team assignment: personal tasks are just the creator's own; team
-        // tasks can be handed to any other active member.
-        taskType: State.taskFilters.taskType === 'team' ? 'team' : 'personal',
+        // tasks can be handed to any other active member; project tasks are
+        // scoped to whichever project is selected and can only be handed to
+        // that project's members.
+        taskType: ['team', 'project'].includes(State.taskFilters.taskType) ? State.taskFilters.taskType : 'personal',
         assigneeId: '',
+        projectId: State.taskFilters.taskType === 'project' ? (State.taskFilters.projectId || '') : '',
         createdById: Auth.user ? Auth.user.id : null,
         createdByName: Auth.user ? Auth.user.name : ''
       };
     },
+
+    // Mirrors lib/store.js#taskWriteLevel exactly, for UI purposes only
+    // (hide/disable controls) — the server independently re-enforces every
+    // one of these rules on every write, so this is never itself a security
+    // boundary. 'full' = every field + delete. 'limited' = a project task's
+    // assignee: can update status/checklist/notes and add screenshots, but
+    // can't edit other fields, delete the task, or remove a screenshot.
+    // 'none' = read-only (or no access at all — filtered out server-side
+    // before it ever reaches here).
+    writeLevel(t) {
+      if (!Auth.user) return 'none';
+      if (Auth.user.role === 'admin') return 'full';
+      const type = t.taskType || 'personal';
+      if (type === 'team') return 'full';
+      if (type === 'personal') return (!t.createdById || t.createdById === Auth.user.id) ? 'full' : 'none';
+      if (type === 'project') return t.assigneeId === Auth.user.id ? 'limited' : 'none';
+      return 'full';
+    },
+    canWrite(t) { return TaskManager.writeLevel(t) !== 'none'; },
+    canDelete(t) { return TaskManager.writeLevel(t) === 'full'; },
+    isLimited(t) { return TaskManager.writeLevel(t) === 'limited'; },
 
     checklistPct(t) {
       if (!t.checklist || !t.checklist.length) return 0;
@@ -626,7 +700,8 @@
     },
 
     assigneeChip(t) {
-      if ((t.taskType || 'personal') !== 'team') return '<span class="text-muted small">—</span>';
+      const type = t.taskType || 'personal';
+      if (type !== 'team' && type !== 'project') return '<span class="text-muted small">—</span>';
       if (!t.assigneeId) return '<span class="badge bg-secondary-subtle text-secondary-emphasis">Unassigned</span>';
       const name = TeamMembers.nameFor(t.assigneeId);
       return `<span class="assignee-chip"><span class="avatar-badge">${Utils.escapeHtml(TeamMembers.initialsFor(t.assigneeId))}</span>${Utils.escapeHtml(name)}</span>`;
@@ -709,7 +784,8 @@
         TaskManager.draft = JSON.parse(JSON.stringify(t));
         TaskManager.originalSnapshot = JSON.parse(JSON.stringify(t));
         TaskManager.isNew = false;
-        document.getElementById('taskModalTitle').innerHTML = `<i class="bi bi-card-checklist me-2"></i>Edit Task <span class="text-secondary small">#${t.id}</span>`;
+        const titleVerb = TaskManager.canWrite(t) ? 'Edit' : 'View';
+        document.getElementById('taskModalTitle').innerHTML = `<i class="bi bi-card-checklist me-2"></i>${titleVerb} Task <span class="text-secondary small">#${t.id}</span>`;
         document.getElementById('btnDeleteTaskModal').classList.remove('d-none');
       } else {
         TaskManager.draft = TaskManager.blank();
@@ -731,8 +807,7 @@
       document.getElementById('taskTitle').value = d.title;
       document.getElementById('taskDescription').value = d.description;
       document.getElementById('taskType').value = d.taskType || 'personal';
-      document.getElementById('taskAssigneeWrap').classList.toggle('d-none', (d.taskType || 'personal') !== 'team');
-      TeamMembers.populateSelect(document.getElementById('taskAssignee'), d.assigneeId);
+      TaskManager.applyTaskTypeUI(d.taskType || 'personal', d.projectId, d.assigneeId);
       document.getElementById('taskCategory').value = d.category;
       document.getElementById('taskPriority').value = d.priority;
       document.getElementById('taskStatus').value = d.status;
@@ -755,6 +830,80 @@
       TaskManager.renderTaskVoiceNotes();
       TaskManager.renderHistory();
       TaskManager.resetTimerUI();
+      TaskManager.applyWritePermissionUI();
+    },
+
+    // Shows/hides the Project + Assign To fields for the selected task type,
+    // and populates Assign To from the right roster — the whole team for
+    // 'team', or just the chosen project's members for 'project' (you can't
+    // assign a project task to someone who isn't on that project).
+    applyTaskTypeUI(taskType, projectId, assigneeId) {
+      const isTeam = taskType === 'team';
+      const isProject = taskType === 'project';
+      document.getElementById('taskProjectWrap').classList.toggle('d-none', !isProject);
+      document.getElementById('taskAssigneeWrap').classList.toggle('d-none', !isTeam && !isProject);
+      const hint = document.getElementById('taskAssigneeHint');
+      if (isProject) {
+        Projects.populateProjectSelect(document.getElementById('taskProjectSelect'), projectId);
+        const project = Projects.getById(projectId);
+        Projects.populateMembersSelect(document.getElementById('taskAssignee'), assigneeId, project);
+        hint.textContent = project ? '' : 'Pick a project first to choose who it can be assigned to.';
+      } else if (isTeam) {
+        TeamMembers.populateSelect(document.getElementById('taskAssignee'), assigneeId);
+        hint.textContent = '';
+      }
+    },
+
+    // Fields a limited-write user (a project task's assignee) may still
+    // change on the Details tab — mirrors LIMITED_WRITE_FIELDS in
+    // lib/store.js#writeDbForUser (status; checklist/notes live on their
+    // own tabs and are handled separately below, not disabled at all).
+    LIMITED_ENABLED_DETAIL_IDS: ['taskStatus'],
+
+    // Frontend reflection of the server's write rule
+    // (lib/store.js#taskWriteLevel) — for a task the current user can see
+    // but can't fully edit, hides/disables controls accordingly. This is a
+    // UX courtesy only; the server enforces the real rule independently on
+    // every write regardless of what the client sends.
+    //
+    //   'none'    — fully read-only: every field disabled, Save+Delete hidden.
+    //   'limited' — a project task's assignee: Save stays visible (they can
+    //               still submit a change), Delete is hidden, and only
+    //               Status among the Details-tab fields stays enabled.
+    //               Checklist and Notes stay fully editable (both are
+    //               server-whitelisted for this level too). Voice notes
+    //               are left alone — untouched by this permission tier.
+    //               Screenshots: the "Attach" button stays enabled but
+    //               per-screenshot delete buttons are omitted entirely
+    //               (see renderTaskScreenshots).
+    //   'full'    — everything enabled, as before.
+    applyWritePermissionUI() {
+      const d = TaskManager.draft;
+      const level = TaskManager.isNew ? 'full' : TaskManager.writeLevel(d);
+      const readOnly = level === 'none';
+      const limited = level === 'limited';
+
+      document.getElementById('taskReadOnlyNotice').classList.toggle('d-none', !readOnly);
+      document.getElementById('taskLimitedNotice').classList.toggle('d-none', !limited);
+      document.getElementById('btnSaveTaskModal').classList.toggle('d-none', readOnly);
+      document.getElementById('btnDeleteTaskModal').classList.toggle('d-none', readOnly || limited);
+
+      // Disable every field/action-button in the body EXCEPT the tab
+      // switchers — a viewer should still be able to browse Notes/
+      // Checklist/History/Screenshots, just not edit anything in them.
+      document.querySelectorAll('#taskModal .modal-body input, #taskModal .modal-body select, #taskModal .modal-body textarea, #taskModal .modal-body button')
+        .forEach(el => {
+          if (el.id === 'btnClaimTask' || el.dataset.bsToggle === 'tab') return;
+          if (el.closest('.voice-recorder')) return; // voice tab is left alone at every level
+          if (!limited) { el.disabled = readOnly; return; }
+          // Limited: disabled unless it's on the Details-tab whitelist, or
+          // it lives inside the Checklist/Notes/Screenshots tab panes
+          // (all fully enabled at this level — only Details-tab fields
+          // other than Status, and Delete, are actually restricted).
+          const inAllowedPane = !!el.closest('#tabChecklist, #tabNotes, #tabScreenshots');
+          const whitelisted = TaskManager.LIMITED_ENABLED_DETAIL_IDS.includes(el.id);
+          el.disabled = !(inAllowedPane || whitelisted);
+        });
     },
 
     renderChecklist() {
@@ -779,8 +928,14 @@
     },
 
     renderTaskScreenshots() {
+      // A limited-write assignee can add screenshots but not remove
+      // existing ones (mirrors lib/store.js#writeDbForUser, which restores
+      // any screenshot missing from the payload for such a task anyway —
+      // hiding the button here is just so the click never looks like it
+      // worked).
       ScreenshotManager.renderGrid(document.getElementById('taskScreenshotGrid'), 'task', TaskManager.draft.id,
-        { colClass: 'col-6 col-md-4', emptyHtml: '<p class="text-muted small">No screenshots attached.</p>' });
+        { colClass: 'col-6 col-md-4', emptyHtml: '<p class="text-muted small">No screenshots attached.</p>',
+          hideDelete: TaskManager.isLimited(TaskManager.draft) });
     },
 
     renderTaskVoiceNotes() {
@@ -872,6 +1027,7 @@
       let list = Store.data.tasks.slice();
       list = list.filter(t => {
         if (f.taskType && (t.taskType || 'personal') !== f.taskType) return false;
+        if (f.taskType === 'project' && t.projectId !== f.projectId) return false;
         if (f.assignee === 'me' && (!Auth.user || t.assigneeId !== Auth.user.id)) return false;
         if (f.assignee === 'unassigned' && t.assigneeId) return false;
         if (f.status && t.status !== f.status) return false;
@@ -921,7 +1077,39 @@
       projSel.value = currentVal;
     },
 
+    // Keeps the tab bar / project selector / assignee filter in sync with
+    // State.taskFilters — called from renderList() so it's always correct
+    // regardless of how the Tasks view was reached (direct #tasks hash
+    // navigation, a tab click, or the Projects view's "View Tasks" button),
+    // not only when the tab was clicked interactively.
+    syncTabUI() {
+      const type = State.taskFilters.taskType;
+      document.querySelectorAll('#taskTypeTabs .nav-link').forEach(b => b.classList.toggle('active', b.dataset.taskType === type));
+      document.getElementById('filterAssignedToMeWrap').classList.toggle('d-none', type === 'personal');
+      const showProjectSelector = type === 'project';
+      document.getElementById('projectTaskSelectorWrap').classList.toggle('d-none', !showProjectSelector);
+      if (showProjectSelector) {
+        // Default to the first available project when none is selected yet,
+        // so landing on/switching to Project Tasks shows something right
+        // away instead of an empty list waiting for a manual pick.
+        if (!State.taskFilters.projectId) {
+          const firstAvailable = Projects.list.find(p => p.status !== 'archived');
+          if (firstAvailable) State.taskFilters.projectId = firstAvailable.id;
+        }
+        // Always repopulate rather than trying to skip redundant work — it's
+        // cheap, and populateProjectSelect() itself restores the current
+        // selection from State.taskFilters.projectId, so this never resets
+        // anything. (A previous "skip if already showing the right value"
+        // guard here looked harmless but broke the very first render: with
+        // both selector.value and State.taskFilters.projectId starting at
+        // '', the skip condition was satisfied before the dropdown had ever
+        // actually been populated at all.)
+        Projects.populateProjectSelect(document.getElementById('projectTaskSelector'), State.taskFilters.projectId);
+      }
+    },
+
     renderList() {
+      TaskManager.syncTabUI();
       TaskManager.populateFilterOptions();
       TaskManager.renderLegacyBanner();
       const all = TaskManager.getFiltered();
@@ -956,8 +1144,8 @@
             </div>
           </td>
           <td class="text-nowrap">
-            <button type="button" class="btn btn-sm btn-outline-primary" data-action="open" title="Edit"><i class="bi bi-pencil"></i></button>
-            <button type="button" class="btn btn-sm btn-outline-danger" data-action="delete" title="Delete"><i class="bi bi-trash3"></i></button>
+            <button type="button" class="btn btn-sm btn-outline-primary" data-action="open" title="${TaskManager.canWrite(t) ? 'Edit' : 'View'}"><i class="bi ${TaskManager.canWrite(t) ? 'bi-pencil' : 'bi-eye'}"></i></button>
+            ${TaskManager.canDelete(t) ? '<button type="button" class="btn btn-sm btn-outline-danger" data-action="delete" title="Delete"><i class="bi bi-trash3"></i></button>' : ''}
           </td>
         </tr>`;
       }).join('');
@@ -1011,8 +1199,10 @@
       const d = TaskManager.draft;
       d.title = document.getElementById('taskTitle').value.trim();
       d.description = document.getElementById('taskDescription').value;
-      d.taskType = document.getElementById('taskType').value === 'team' ? 'team' : 'personal';
-      const newAssigneeId = d.taskType === 'team' ? document.getElementById('taskAssignee').value : '';
+      const chosenType = document.getElementById('taskType').value;
+      d.taskType = ['team', 'project'].includes(chosenType) ? chosenType : 'personal';
+      const newAssigneeId = (d.taskType === 'team' || d.taskType === 'project') ? document.getElementById('taskAssignee').value : '';
+      d.projectId = d.taskType === 'project' ? document.getElementById('taskProjectSelect').value : '';
       d.category = document.getElementById('taskCategory').value;
       d.priority = document.getElementById('taskPriority').value;
       const newStatus = document.getElementById('taskStatus').value;
@@ -1035,7 +1225,7 @@
           const to = TeamMembers.nameFor(newAssigneeId) || 'Unassigned';
           d.history.push({ date: d.updatedDate, message: `Reassigned from ${from} to ${to}` });
         }
-      } else if (d.taskType === 'team' && newAssigneeId) {
+      } else if ((d.taskType === 'team' || d.taskType === 'project') && newAssigneeId) {
         d.history.push({ date: d.updatedDate, message: `Assigned to ${TeamMembers.nameFor(newAssigneeId)}` });
       }
       d.status = newStatus;
@@ -1043,7 +1233,8 @@
 
       if (TaskManager.isNew) {
         Store.data.tasks.unshift(d);
-        addActivity('bi-plus-circle', `Created ${d.taskType === 'team' ? 'team ' : ''}task "${d.title}"`);
+        const typeLabel = d.taskType === 'team' ? 'team ' : d.taskType === 'project' ? `project (${Projects.nameFor(d.projectId)}) ` : '';
+        addActivity('bi-plus-circle', `Created ${typeLabel}task "${d.title}"`);
       } else {
         const idx = Store.data.tasks.findIndex(t => t.id === d.id);
         Store.data.tasks[idx] = d;
@@ -1051,6 +1242,105 @@
       }
       Store.save();
       TaskManager.savedThisSession = true;
+    }
+  };
+
+  /* ========================================================================
+     PROJECT MANAGER — create/edit/archive a project, assign/remove members.
+     All mutations go straight to /api/projects* (admin-only server-side);
+     this module never touches Store.data at all.
+     ==================================================================== */
+  const ProjectManager = {
+    draft: null, isNew: false,
+
+    openModal(id = null) {
+      const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('projectModal'));
+      if (id) {
+        const p = Projects.getById(id);
+        if (!p) return;
+        ProjectManager.draft = JSON.parse(JSON.stringify(p));
+        ProjectManager.isNew = false;
+        document.getElementById('projectModalTitle').innerHTML = `<i class="bi bi-folder-fill me-2"></i>Edit Project <span class="text-secondary small">#${p.id}</span>`;
+      } else {
+        ProjectManager.draft = { id: '', name: '', description: '', status: 'active', assignedUserIds: [] };
+        ProjectManager.isNew = true;
+        document.getElementById('projectModalTitle').innerHTML = `<i class="bi bi-folder-fill me-2"></i>New Project`;
+      }
+      ProjectManager.fillForm();
+      modal.show();
+    },
+
+    fillForm() {
+      const p = ProjectManager.draft;
+      document.getElementById('projectId').value = p.id;
+      document.getElementById('projectName').value = p.name;
+      document.getElementById('projectDescription').value = p.description;
+      document.getElementById('projectStatus').value = p.status;
+      document.getElementById('projectMetaLabel').textContent = p.createdAt
+        ? `Created ${Utils.formatDateTime(p.createdAt)} · Updated ${Utils.formatDateTime(p.updatedAt)}` : '';
+      const membersList = document.getElementById('projectMembersList');
+      membersList.innerHTML = TeamMembers.list.map(m => `
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" value="${m.id}" id="pm-${m.id}" ${(p.assignedUserIds || []).includes(m.id) ? 'checked' : ''}>
+          <label class="form-check-label" for="pm-${m.id}">${Utils.escapeHtml(m.name)} <span class="text-muted small">${Utils.escapeHtml(m.email)}</span></label>
+        </div>`).join('') || '<p class="text-muted small mb-0">No active users to assign yet.</p>';
+    },
+
+    async save() {
+      const name = document.getElementById('projectName').value.trim();
+      if (!name) { toast('Project name is required.', 'danger'); return false; }
+      const payload = {
+        name,
+        description: document.getElementById('projectDescription').value,
+        status: document.getElementById('projectStatus').value,
+        assignedUserIds: Array.from(document.querySelectorAll('#projectMembersList input[type=checkbox]:checked')).map(el => el.value)
+      };
+      try {
+        if (ProjectManager.isNew) {
+          const project = await Projects.createProject(payload);
+          Projects.list.unshift(project);
+          addActivity('bi-folder-plus', `Created project "${project.name}"`);
+        } else {
+          const project = await Projects.updateProject(ProjectManager.draft.id, payload);
+          const idx = Projects.list.findIndex(x => x.id === project.id);
+          if (idx > -1) Projects.list[idx] = project; else Projects.list.push(project);
+          addActivity('bi-pencil', `Updated project "${project.name}"`);
+        }
+        return true;
+      } catch (e) {
+        toast(e.message, 'danger');
+        return false;
+      }
+    }
+  };
+
+  const ProjectsView = {
+    render() {
+      const isAdmin = !!(Auth.user && Auth.user.role === 'admin');
+      document.getElementById('btnNewProject').classList.toggle('d-none', !isAdmin);
+      document.getElementById('projectsEmptyState').classList.toggle('d-none', Projects.list.length > 0);
+      document.getElementById('projectsEmptyText').textContent = isAdmin
+        ? 'No projects yet. Create one to get started.'
+        : "You're not assigned to any projects yet. Ask an admin to add you to one.";
+      document.getElementById('projectsGrid').innerHTML = Projects.list.map(p => ProjectsView.cardHtml(p, isAdmin)).join('');
+    },
+    cardHtml(p, isAdmin) {
+      const memberNames = (p.assignedUserIds || []).map(id => TeamMembers.nameFor(id)).filter(Boolean);
+      return `
+        <div class="col-md-6 col-lg-4">
+          <div class="glass-card p-3 h-100 fade-in">
+            <div class="d-flex justify-content-between align-items-start mb-2">
+              <h6 class="fw-bold mb-0">${Utils.escapeHtml(p.name)}</h6>
+              <span class="badge ${p.status === 'archived' ? 'bg-secondary' : 'bg-success'}">${p.status}</span>
+            </div>
+            <p class="small text-muted mb-2">${Utils.escapeHtml(p.description || 'No description.').slice(0, 140)}</p>
+            <div class="small text-secondary mb-3"><i class="bi bi-people me-1"></i>${memberNames.length ? Utils.escapeHtml(memberNames.join(', ')) : 'No members assigned'}</div>
+            <div class="d-flex justify-content-between align-items-center">
+              <button type="button" class="btn btn-sm btn-outline-primary" data-view-project-tasks="${p.id}"><i class="bi bi-list-task me-1"></i>View Tasks</button>
+              ${isAdmin ? `<button type="button" class="btn btn-sm btn-outline-secondary" data-edit-project="${p.id}"><i class="bi bi-pencil"></i></button>` : ''}
+            </div>
+          </div>
+        </div>`;
     }
   };
 
@@ -1348,16 +1638,18 @@
     cardHtml(t) {
       const pct = TaskManager.checklistPct(t);
       const due = TaskManager.dueBadge(t);
+      const writable = TaskManager.canWrite(t);
+      const type = t.taskType || 'personal';
       return `
-      <div class="kanban-card" draggable="true" data-id="${t.id}">
-        <div class="kc-title">${Utils.escapeHtml(t.title)}</div>
+      <div class="kanban-card" draggable="${writable}" data-id="${t.id}" title="${writable ? '' : 'View only — not assigned to you'}">
+        <div class="kc-title">${Utils.escapeHtml(t.title)}${writable ? '' : ' <i class="bi bi-eye text-muted small"></i>'}</div>
         <div class="kc-meta">
           <span class="badge badge-priority-${t.priority}">${t.priority}</span>
           ${t.favorite ? '<i class="bi bi-star-fill text-warning"></i>' : ''}
           ${t.pinned ? '<i class="bi bi-pin-angle-fill text-primary"></i>' : ''}
           ${due}
         </div>
-        ${(t.taskType || 'personal') === 'team' ? `<div class="mt-2">${TaskManager.assigneeChip(t)}</div>` : ''}
+        ${(type === 'team' || type === 'project') ? `<div class="mt-2">${TaskManager.assigneeChip(t)}</div>` : ''}
         ${t.checklist.length ? `<div class="progress mt-2" style="height:5px;"><div class="progress-bar" style="width:${pct}%"></div></div>` : ''}
       </div>`;
     },
@@ -1657,6 +1949,7 @@
   function renderView(view) {
     switch (view) {
       case 'dashboard': Dashboard.render(); break;
+      case 'projects': ProjectsView.render(); break;
       case 'tasks': TaskManager.renderList(); break;
       case 'bugs': BugManager.renderList(); break;
       case 'dailylog': DailyLogManager.render(); break;
@@ -1679,9 +1972,10 @@
     const authed = await Auth.init();
     if (!authed) return; // Auth.init() already redirected to /login.html
 
-    await Promise.all([Store.load(), TeamMembers.load()]);
+    await Promise.all([Store.load(), TeamMembers.load(), Projects.load()]);
     initVoiceRecorders();
     wireNav();
+    wireProjects();
     wireTaskModal();
     wireBugModal();
     wireDailyLog();
@@ -1704,6 +1998,33 @@
         if (label) label.textContent = `Auto-saved at ${new Date().toLocaleTimeString()}`;
       }
     }, 30000);
+  }
+
+  function wireProjects() {
+    document.getElementById('btnNewProject').addEventListener('click', () => ProjectManager.openModal());
+    document.getElementById('projectsGrid').addEventListener('click', e => {
+      const editBtn = e.target.closest('[data-edit-project]');
+      const viewBtn = e.target.closest('[data-view-project-tasks]');
+      if (editBtn) {
+        ProjectManager.openModal(editBtn.dataset.editProject);
+      } else if (viewBtn) {
+        // Set the target state *before* switching views, since switchView()
+        // triggers TaskManager.renderList() (which reads this state) itself
+        // — avoids rendering once with stale state and again right after.
+        State.taskFilters.taskType = 'project';
+        State.taskFilters.projectId = viewBtn.dataset.viewProjectTasks;
+        State.taskPage = 1;
+        switchView('tasks');
+      }
+    });
+    document.getElementById('projectForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const ok = await ProjectManager.save();
+      if (!ok) return;
+      toast('Project saved.', 'success');
+      bootstrap.Modal.getInstance(document.getElementById('projectModal')).hide();
+      if (State.currentView === 'projects') ProjectsView.render();
+    });
   }
 
   function wireNav() {
@@ -1745,12 +2066,14 @@
     // Personal / Team task tabs
     document.getElementById('taskTypeTabs').addEventListener('click', e => {
       const btn = e.target.closest('[data-task-type]'); if (!btn) return;
-      document.querySelectorAll('#taskTypeTabs .nav-link').forEach(b => b.classList.toggle('active', b === btn));
-      const type = btn.dataset.taskType;
-      State.taskFilters.taskType = type;
+      State.taskFilters.taskType = btn.dataset.taskType;
       State.taskFilters.assignee = '';
       document.getElementById('filterAssignee').value = '';
-      document.getElementById('filterAssignedToMeWrap').classList.toggle('d-none', type !== 'team');
+      State.taskPage = 1;
+      TaskManager.renderList(); // syncTabUI() (called from renderList) handles tab/selector visibility
+    });
+    document.getElementById('projectTaskSelector').addEventListener('change', e => {
+      State.taskFilters.projectId = e.target.value;
       State.taskPage = 1;
       TaskManager.renderList();
     });
@@ -1789,9 +2112,12 @@
 
   function wireTaskModal() {
     document.getElementById('taskType').addEventListener('change', e => {
-      const isTeam = e.target.value === 'team';
-      document.getElementById('taskAssigneeWrap').classList.toggle('d-none', !isTeam);
-      if (isTeam) TeamMembers.populateSelect(document.getElementById('taskAssignee'), TaskManager.draft ? TaskManager.draft.assigneeId : '');
+      TaskManager.applyTaskTypeUI(e.target.value, '', '');
+    });
+    document.getElementById('taskProjectSelect').addEventListener('change', e => {
+      const project = Projects.getById(e.target.value);
+      Projects.populateMembersSelect(document.getElementById('taskAssignee'), '', project);
+      document.getElementById('taskAssigneeHint').textContent = project ? '' : 'Pick a project first to choose who it can be assigned to.';
     });
     document.getElementById('btnClaimTask').addEventListener('click', () => {
       if (!TaskManager.draft) return;
@@ -1810,6 +2136,10 @@
       e.preventDefault();
       const title = document.getElementById('taskTitle').value.trim();
       if (!title) { toast('Task title is required.', 'danger'); return; }
+      if (document.getElementById('taskType').value === 'project' && !document.getElementById('taskProjectSelect').value) {
+        toast('Pick a project for this task.', 'danger');
+        return;
+      }
       TaskManager.save();
       toast('Task saved.', 'success');
       bootstrap.Modal.getInstance(document.getElementById('taskModal')).hide();

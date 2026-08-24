@@ -5,14 +5,16 @@ import { withApiError } from '../../../lib/withApiError.js';
 
 // Bugs, daily logs, and activity are a fully shared workspace — every active
 // user reads and writes the same records, per the shared-workspace model.
-// Tasks are split: team tasks are shared the same way, but personal tasks
-// (and anything attached to them) are scoped to their creator on both read
-// and write — see lib/store.js#readDbForUser / #writeDbForUser.
+// Tasks are split: team tasks are shared the same way; personal tasks are
+// scoped to their creator; project tasks are scoped to project membership
+// (read) and task assignment (write) — see lib/store.js#readDbForUser /
+// #writeDbForUser for the full rule set. Projects themselves are never
+// created/edited through this endpoint — see app/api/projects*.
 
 export const GET = withApiError(async function GET() {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const db = await readDbForUser(user.id);
+  const db = await readDbForUser(user);
   return NextResponse.json(db);
 });
 
@@ -30,6 +32,6 @@ export const PUT = withApiError(async function PUT(request) {
     return NextResponse.json({ error: 'Expected a JSON object.' }, { status: 400 });
   }
 
-  await writeDbForUser(user.id, body);
+  await writeDbForUser(user, body);
   return NextResponse.json({ ok: true });
 });

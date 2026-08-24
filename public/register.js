@@ -35,8 +35,6 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         showError(data.error || 'Registration failed.');
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-person-plus me-1"></i>Create Account';
         return;
       }
       form.classList.add('d-none');
@@ -44,6 +42,9 @@
       successEl.classList.remove('d-none');
     } catch (err) {
       showError('Network error — please try again.');
+    } finally {
+      // Always restore the button — on error OR success — so a failed
+      // attempt never leaves it stuck disabled/spinning with no way to retry.
       btn.disabled = false;
       btn.innerHTML = '<i class="bi bi-person-plus me-1"></i>Create Account';
     }
