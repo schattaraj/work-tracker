@@ -655,6 +655,10 @@
         // that project's members.
         taskType: ['team', 'project'].includes(State.taskFilters.taskType) ? State.taskFilters.taskType : 'personal',
         assigneeId: '',
+        // Who assigned the task — set alongside assigneeId whenever it's
+        // changed (see save()) and re-stamped authoritatively server-side
+        // from the session user on every write (lib/store.js#stampAssignment).
+        assignedById: '', assignedByName: '',
         projectId: State.taskFilters.taskType === 'project' ? (State.taskFilters.projectId || '') : '',
         createdById: Auth.user ? Auth.user.id : null,
         createdByName: Auth.user ? Auth.user.name : ''
@@ -675,7 +679,12 @@
       const type = t.taskType || 'personal';
       if (type === 'team') return 'full';
       if (type === 'personal') return (!t.createdById || t.createdById === Auth.user.id) ? 'full' : 'none';
-      if (type === 'project') return t.assigneeId === Auth.user.id ? 'limited' : 'none';
+      if (type === 'project') {
+        // The creator/assigner keeps full control even after assigning the
+        // task to someone else; the assignee (if different) gets 'limited'.
+        if (t.createdById && t.createdById === Auth.user.id) return 'full';
+        return t.assigneeId === Auth.user.id ? 'limited' : 'none';
+      }
       return 'full';
     },
     canWrite(t) { return TaskManager.writeLevel(t) !== 'none'; },
@@ -704,7 +713,8 @@
       if (type !== 'team' && type !== 'project') return '<span class="text-muted small">—</span>';
       if (!t.assigneeId) return '<span class="badge bg-secondary-subtle text-secondary-emphasis">Unassigned</span>';
       const name = TeamMembers.nameFor(t.assigneeId);
-      return `<span class="assignee-chip"><span class="avatar-badge">${Utils.escapeHtml(TeamMembers.initialsFor(t.assigneeId))}</span>${Utils.escapeHtml(name)}</span>`;
+      const title = t.assignedByName ? ` title="Assigned by ${Utils.escapeHtml(t.assignedByName)}"` : '';
+      return `<span class="assignee-chip"${title}><span class="avatar-badge">${Utils.escapeHtml(TeamMembers.initialsFor(t.assigneeId))}</span>${Utils.escapeHtml(name)}</span>`;
     },
 
     // Personal tasks created before per-owner tracking existed have no
@@ -807,7 +817,7 @@
       document.getElementById('taskTitle').value = d.title;
       document.getElementById('taskDescription').value = d.description;
       document.getElementById('taskType').value = d.taskType || 'personal';
-      TaskManager.applyTaskTypeUI(d.taskType || 'personal', d.projectId, d.assigneeId);
+      TaskManager.applyTaskTypeUI(d.taskType || 'personal', d.projectId, d.assigneeId, d.assignedByName);
       document.getElementById('taskCategory').value = d.category;
       document.getElementById('taskPriority').value = d.priority;
       document.getElementById('taskStatus').value = d.status;
@@ -837,20 +847,21 @@
     // and populates Assign To from the right roster — the whole team for
     // 'team', or just the chosen project's members for 'project' (you can't
     // assign a project task to someone who isn't on that project).
-    applyTaskTypeUI(taskType, projectId, assigneeId) {
+    applyTaskTypeUI(taskType, projectId, assigneeId, assignedByName) {
       const isTeam = taskType === 'team';
       const isProject = taskType === 'project';
       document.getElementById('taskProjectWrap').classList.toggle('d-none', !isProject);
       document.getElementById('taskAssigneeWrap').classList.toggle('d-none', !isTeam && !isProject);
       const hint = document.getElementById('taskAssigneeHint');
+      const assignedByText = (assigneeId && assignedByName) ? `Assigned by ${assignedByName}` : '';
       if (isProject) {
         Projects.populateProjectSelect(document.getElementById('taskProjectSelect'), projectId);
         const project = Projects.getById(projectId);
         Projects.populateMembersSelect(document.getElementById('taskAssignee'), assigneeId, project);
-        hint.textContent = project ? '' : 'Pick a project first to choose who it can be assigned to.';
+        hint.textContent = project ? assignedByText : 'Pick a project first to choose who it can be assigned to.';
       } else if (isTeam) {
         TeamMembers.populateSelect(document.getElementById('taskAssignee'), assigneeId);
-        hint.textContent = '';
+        hint.textContent = assignedByText;
       }
     },
 
@@ -1227,6 +1238,14 @@
         }
       } else if ((d.taskType === 'team' || d.taskType === 'project') && newAssigneeId) {
         d.history.push({ date: d.updatedDate, message: `Assigned to ${TeamMembers.nameFor(newAssigneeId)}` });
+      }
+      const prevAssigneeId = (!TaskManager.isNew && TaskManager.originalSnapshot) ? (TaskManager.originalSnapshot.assigneeId || '') : '';
+      if ((newAssigneeId || '') !== prevAssigneeId) {
+        // Optimistic local stamp so it shows immediately without a reload —
+        // the server re-derives this itself from the session on every write
+        // (lib/store.js#stampAssignment) and is the actual source of truth.
+        d.assignedById = newAssigneeId ? Auth.user.id : '';
+        d.assignedByName = newAssigneeId ? Auth.user.name : '';
       }
       d.status = newStatus;
       d.assigneeId = newAssigneeId;

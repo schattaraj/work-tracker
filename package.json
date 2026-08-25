@@ -4,7 +4,7 @@
   "private": true,
   "description": "Personal Developer Work Tracker — Next.js backend (auth + JSON-file storage) with a vanilla-JS frontend.",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3002",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

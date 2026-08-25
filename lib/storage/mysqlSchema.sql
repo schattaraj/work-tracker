@@ -3,9 +3,13 @@
 --
 -- You don't need to run this by hand: mysqlDriver.js executes these same
 -- CREATE TABLE IF NOT EXISTS statements automatically the first time it's
--- used in a process (see ensureSchema() there). This file exists so the
--- schema is easy to read, review, or run manually with a DB client if
--- you'd rather manage migrations yourself.
+-- used in a process (see ensureSchema() there). Columns added after a
+-- table already existed elsewhere (an existing install) are additionally
+-- backfilled with idempotent ALTER TABLE ADD COLUMN calls — see
+-- COLUMN_MIGRATIONS in the same file — so an upgrade never requires a
+-- manual migration step either. This file exists so the schema is easy to
+-- read and review, or run manually with a DB client if you'd rather manage
+-- migrations yourself.
 --
 -- Design notes:
 --  - Every date/time/datetime field is stored as the exact ISO-8601 string
@@ -60,6 +64,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_by_id    VARCHAR(64),
   created_by_name  VARCHAR(255),
   project_id       VARCHAR(64),
+  assigned_by_id   VARCHAR(64),  -- who set the current assignee_id (stamped server-side, not client-trusted)
+  assigned_by_name VARCHAR(255),
   INDEX idx_tasks_task_type (task_type),
   INDEX idx_tasks_created_by (created_by_id),
   INDEX idx_tasks_project (project_id)
