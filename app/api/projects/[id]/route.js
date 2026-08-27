@@ -78,3 +78,34 @@ export const PATCH = withApiError(async function PATCH(request, { params }) {
   await writeDb(db);
   return NextResponse.json({ project });
 });
+
+// Admin-only: permanently removes the project. Cascades to its tasks (and
+// anything attached to those tasks — screenshots, voice notes) rather than
+// leaving them orphaned: a project task only exists in the context of its
+// project (it's only reachable through that project's selector in the UI),
+// so once the project is gone those rows would otherwise become permanent,
+// invisible dead weight nobody could ever see or clean up again. Archiving
+// (PATCH status: 'archived') remains the reversible alternative for a
+// project that's just done, not meant to be erased.
+export const DELETE = withApiError(async function DELETE(request, { params }) {
+  const user = await getSessionUser();
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (user.role !== 'admin') return NextResponse.json({ error: 'Admins only.' }, { status: 403 });
+
+  const { id } = await params;
+  const db = await readDb();
+  const project = (db.projects || []).find(p => p.id === id);
+  if (!project) return NextResponse.json({ error: 'Project not found.' }, { status: 404 });
+
+  const removedTaskIds = new Set(
+    (db.tasks || []).filter(t => t.taskType === 'project' && t.projectId === id).map(t => t.id)
+  );
+
+  db.projects = (db.projects || []).filter(p => p.id !== id);
+  db.tasks = (db.tasks || []).filter(t => !removedTaskIds.has(t.id));
+  db.screenshots = (db.screenshots || []).filter(s => !(s.linkedType === 'task' && removedTaskIds.has(s.linkedId)));
+  db.voiceNotes = (db.voiceNotes || []).filter(v => !(v.linkedType === 'task' && removedTaskIds.has(v.linkedId)));
+
+  await writeDb(db);
+  return NextResponse.json({ deleted: true, tasksRemoved: removedTaskIds.size });
+});

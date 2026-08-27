@@ -304,6 +304,22 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Failed to update project.');
       return data.project;
+    },
+    async deleteProject(id) {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to delete project.');
+      return data; // { deleted: true, tasksRemoved }
+    },
+    async taskCountFor(id) {
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(id)}/tasks`, { credentials: 'same-origin' });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return (data.tasks || []).length;
+      } catch {
+        return null; // best-effort — the confirm dialog just omits the count if this fails
+      }
     }
   };
 
@@ -1129,7 +1145,6 @@
       const pageItems = all.slice((State.taskPage - 1) * PAGE_SIZE, State.taskPage * PAGE_SIZE);
       const tbody = document.getElementById('tasksTableBody');
       tbody.innerHTML = pageItems.map(t => {
-        const pct = TaskManager.checklistPct(t);
         return `
         <tr data-id="${t.id}">
           <td>
@@ -1148,12 +1163,7 @@
           <td><span class="badge badge-priority-${t.priority}">${t.priority}</span></td>
           <td><span class="badge badge-status-${t.status.replace(' ', '')}">${t.status}</span></td>
           <td class="d-none d-lg-table-cell">${TaskManager.dueBadge(t) || '<span class="text-muted small">—</span>'}</td>
-          <td class="d-none d-lg-table-cell" style="min-width:110px;">
-            <div class="d-flex align-items-center gap-2">
-              <div class="progress flex-fill" style="height:6px;"><div class="progress-bar" style="width:${pct}%"></div></div>
-              <span class="small text-muted">${pct}%</span>
-            </div>
-          </td>
+          <td class="d-none d-lg-table-cell"><span class="small text-muted">${Utils.formatDate(t.createdDate)}</span></td>
           <td class="text-nowrap">
             <button type="button" class="btn btn-sm btn-outline-primary" data-action="open" title="${TaskManager.canWrite(t) ? 'Edit' : 'View'}"><i class="bi ${TaskManager.canWrite(t) ? 'bi-pencil' : 'bi-eye'}"></i></button>
             ${TaskManager.canDelete(t) ? '<button type="button" class="btn btn-sm btn-outline-danger" data-action="delete" title="Delete"><i class="bi bi-trash3"></i></button>' : ''}
@@ -1280,13 +1290,46 @@
         ProjectManager.draft = JSON.parse(JSON.stringify(p));
         ProjectManager.isNew = false;
         document.getElementById('projectModalTitle').innerHTML = `<i class="bi bi-folder-fill me-2"></i>Edit Project <span class="text-secondary small">#${p.id}</span>`;
+        document.getElementById('btnDeleteProjectModal').classList.remove('d-none');
       } else {
         ProjectManager.draft = { id: '', name: '', description: '', status: 'active', assignedUserIds: [] };
         ProjectManager.isNew = true;
         document.getElementById('projectModalTitle').innerHTML = `<i class="bi bi-folder-fill me-2"></i>New Project`;
+        document.getElementById('btnDeleteProjectModal').classList.add('d-none');
       }
       ProjectManager.fillForm();
       modal.show();
+    },
+
+    // Admin-only (mirrors the server). Shows the task/attachment impact
+    // before deleting since — unlike Archive — this is irreversible and
+    // cascades: deleting a project also deletes every one of its tasks and
+    // anything attached to them (see app/api/projects/[id]/route.js#DELETE).
+    async confirmDelete(id) {
+      const p = Projects.getById(id);
+      if (!p) return;
+      const taskCount = await Projects.taskCountFor(id);
+      const impact = taskCount
+        ? ` This will also permanently delete its ${taskCount} task${taskCount === 1 ? '' : 's'} and any attached screenshots or voice notes.`
+        : '';
+      confirmAction('Delete Project?', `Delete "${p.name}"? This cannot be undone.${impact}`, async () => {
+        try {
+          await Projects.deleteProject(id);
+          Projects.list = Projects.list.filter(x => x.id !== id);
+          addActivity('bi-folder-x', `Deleted project "${p.name}"`);
+          toast('Project deleted.', 'success');
+          if (State.currentView === 'projects') ProjectsView.render();
+          // The project's tasks (and any attached screenshots/voice notes)
+          // were deleted server-side too — reload so Tasks/Kanban/Reports
+          // drop them immediately instead of showing dangling entries.
+          await Store.load();
+          if (State.currentView === 'tasks') TaskManager.renderList();
+          if (State.currentView === 'kanban') KanbanManager.render();
+          Dashboard.refreshIfActive();
+        } catch (e) {
+          toast(e.message || 'Failed to delete project.', 'danger');
+        }
+      });
     },
 
     fillForm() {
@@ -1356,7 +1399,11 @@
             <div class="small text-secondary mb-3"><i class="bi bi-people me-1"></i>${memberNames.length ? Utils.escapeHtml(memberNames.join(', ')) : 'No members assigned'}</div>
             <div class="d-flex justify-content-between align-items-center">
               <button type="button" class="btn btn-sm btn-outline-primary" data-view-project-tasks="${p.id}"><i class="bi bi-list-task me-1"></i>View Tasks</button>
-              ${isAdmin ? `<button type="button" class="btn btn-sm btn-outline-secondary" data-edit-project="${p.id}"><i class="bi bi-pencil"></i></button>` : ''}
+              ${isAdmin ? `
+                <div class="d-flex gap-1">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" data-edit-project="${p.id}" title="Edit"><i class="bi bi-pencil"></i></button>
+                  <button type="button" class="btn btn-sm btn-outline-danger" data-delete-project="${p.id}" title="Delete"><i class="bi bi-trash3"></i></button>
+                </div>` : ''}
             </div>
           </div>
         </div>`;
@@ -2023,9 +2070,12 @@
     document.getElementById('btnNewProject').addEventListener('click', () => ProjectManager.openModal());
     document.getElementById('projectsGrid').addEventListener('click', e => {
       const editBtn = e.target.closest('[data-edit-project]');
+      const deleteBtn = e.target.closest('[data-delete-project]');
       const viewBtn = e.target.closest('[data-view-project-tasks]');
       if (editBtn) {
         ProjectManager.openModal(editBtn.dataset.editProject);
+      } else if (deleteBtn) {
+        ProjectManager.confirmDelete(deleteBtn.dataset.deleteProject);
       } else if (viewBtn) {
         // Set the target state *before* switching views, since switchView()
         // triggers TaskManager.renderList() (which reads this state) itself
@@ -2043,6 +2093,12 @@
       toast('Project saved.', 'success');
       bootstrap.Modal.getInstance(document.getElementById('projectModal')).hide();
       if (State.currentView === 'projects') ProjectsView.render();
+    });
+    document.getElementById('btnDeleteProjectModal').addEventListener('click', () => {
+      if (!ProjectManager.draft || !ProjectManager.draft.id) return;
+      const id = ProjectManager.draft.id;
+      bootstrap.Modal.getInstance(document.getElementById('projectModal')).hide();
+      setTimeout(() => ProjectManager.confirmDelete(id), 300);
     });
   }
 

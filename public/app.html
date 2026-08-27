@@ -259,7 +259,7 @@
               <th>Priority</th>
               <th>Status</th>
               <th class="d-none d-lg-table-cell">Due</th>
-              <th class="d-none d-lg-table-cell">Progress</th>
+              <th class="d-none d-lg-table-cell">Date</th>
               <th style="width:110px">Actions</th>
             </tr>
           </thead>
@@ -552,7 +552,7 @@
                 </div>
                 <div class="col-12">
                   <label class="form-label small fw-semibold">Description</label>
-                  <textarea class="form-control" id="taskDescription" rows="3"></textarea>
+                  <textarea class="form-control" id="taskDescription" rows="10"></textarea>
                 </div>
                 <div class="col-md-6">
                   <label class="form-label small fw-semibold">Task Type</label>
@@ -820,6 +820,7 @@
           </div>
         </div>
         <div class="modal-footer">
+          <button type="button" class="btn btn-outline-danger me-auto d-none" id="btnDeleteProjectModal"><i class="bi bi-trash3 me-1"></i>Delete</button>
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
           <button type="submit" class="btn btn-primary"><i class="bi bi-save2 me-1"></i>Save Project</button>
         </div>
